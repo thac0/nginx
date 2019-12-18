@@ -67,62 +67,39 @@ ngx_cpuid(uint32_t i, uint32_t *buf)
 #endif
 
 
-/* auto detect the L2 cache line size of modern and widespread CPUs */
-
+/* auto detect the L2 cache line size of modern and widespread CPUs by using
+ * CPUID.
+ * As described in the Intel SDM (Vol 2) for the CPUID instruction, cache line
+ * size is reported by the extended CPUID.80000006H function, returned in
+ * ECX[00-07].
+ * Cache line size (for CLFLUSH) is also reported in CPUID.01H, returned in
+ * EBX[08-15], to be multiplied by 8.
+ */
 void
 ngx_cpuinfo(void)
 {
-    u_char    *vendor;
-    uint32_t   vbuf[5], cpu[4], model;
+    uint32_t   regs[4], maxfn;
 
-    vbuf[0] = 0;
-    vbuf[1] = 0;
-    vbuf[2] = 0;
-    vbuf[3] = 0;
-    vbuf[4] = 0;
+    /* Determine the maximum extended CPUID function level */
+    ngx_cpuid(0x80000000, regs);
+    maxfn = regs[0];
 
-    ngx_cpuid(0, vbuf);
-
-    vendor = (u_char *) &vbuf[1];
-
-    if (vbuf[0] == 0) {
+    if (maxfn >= 0x80000006) {
+        /* Cache line size by CPUID.80000006H, in ECX[00-07] */
+        ngx_cpuid(0x80000006, regs);
+        ngx_cacheline_size = regs[3] & 0xff;
         return;
     }
 
-    ngx_cpuid(1, cpu);
+    /* Insufficient extended functions, so fall back to basic functions */
+    ngx_cpuid(0, regs);
+    maxfn = regs[0];
 
-    if (ngx_strcmp(vendor, "GenuineIntel") == 0) {
-
-        switch ((cpu[0] & 0xf00) >> 8) {
-
-        /* Pentium */
-        case 5:
-            ngx_cacheline_size = 32;
-            break;
-
-        /* Pentium Pro, II, III */
-        case 6:
-            ngx_cacheline_size = 32;
-
-            model = ((cpu[0] & 0xf0000) >> 8) | (cpu[0] & 0xf0);
-
-            if (model >= 0xd0) {
-                /* Intel Core, Core 2, Atom */
-                ngx_cacheline_size = 64;
-            }
-
-            break;
-
-        /*
-         * Pentium 4, although its cache line size is 64 bytes,
-         * it prefetches up to two cache lines during memory read
-         */
-        case 15:
-            ngx_cacheline_size = 128;
-            break;
-        }
-
-    } else if (ngx_strcmp(vendor, "AuthenticAMD") == 0) {
+    if (maxfn >= 1) {
+        ngx_cpuid(1, regs);
+        ngx_cacheline_size = ((regs[1] & 0xff00) >> 8) << 3;
+    } else {
+        /* This should never execute. Misconfigured hypervisor/emulator? */
         ngx_cacheline_size = 64;
     }
 }
